@@ -1,0 +1,301 @@
+version: '3.8'
+
+services:
+  # Zookeeper - for Kafka coordination
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    networks:
+      - ecommerce-network
+
+  # Kafka - message broker for data streams
+  kafka:
+    image: confluentinc/cp-kafka:7.3.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - ecommerce-network
+
+  # Kafka Connect - for data integration
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect:7.3.0
+    container_name: kafka-connect
+    depends_on:
+      - kafka
+      - schema-registry
+    ports:
+      - "8083:8083"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_REST_PORT: 8083
+      CONNECT_GROUP_ID: "connect-cluster"
+      CONNECT_CONFIG_STORAGE_TOPIC: "connect-configs"
+      CONNECT_OFFSET_STORAGE_TOPIC: "connect-offsets"
+      CONNECT_STATUS_STORAGE_TOPIC: "connect-status"
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_INTERNAL_KEY_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_INTERNAL_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_REST_ADVERTISED_HOST_NAME: "kafka-connect"
+      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
+    networks:
+      - ecommerce-network
+
+  # Schema Registry - for data format management
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.3.0
+    container_name: schema-registry
+    depends_on:
+      - kafka
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    networks:
+      - ecommerce-network
+
+  # KSQL Server - for stream processing
+  ksqldb-server:
+    image: confluentinc/cp-ksqldb-server:7.3.0
+    container_name: ksqldb-server
+    depends_on:
+      - kafka
+      - schema-registry
+    ports:
+      - "8088:8088"
+    environment:
+      KSQL_BOOTSTRAP_SERVERS: kafka:9092
+      KSQL_LISTENERS: http://0.0.0.0:8088
+      KSQL_KSQL_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      KSQL_KSQL_SERVICE_ID: ksqldb_
+    networks:
+      - ecommerce-network
+
+  # Cassandra nodes for microservice databases
+  cassandra-user:
+    image: cassandra:4.1
+    container_name: cassandra-user
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=ecommerce-cluster
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      - CASSANDRA_DC=datacenter1
+    volumes:
+      - cassandra-user-data:/var/lib/cassandra
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  cassandra-sales:
+    image: cassandra:4.1
+    container_name: cassandra-sales
+    ports:
+      - "9043:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=ecommerce-cluster
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_SEEDS=cassandra-user
+    volumes:
+      - cassandra-sales-data:/var/lib/cassandra
+    depends_on:
+      - cassandra-user
+    networks:
+      - ecommerce-network
+
+  cassandra-inventory:
+    image: cassandra:4.1
+    container_name: cassandra-inventory
+    ports:
+      - "9044:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=ecommerce-cluster
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_SEEDS=cassandra-user
+    volumes:
+      - cassandra-inventory-data:/var/lib/cassandra
+    depends_on:
+      - cassandra-user
+    networks:
+      - ecommerce-network
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:v2.43.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    networks:
+      - ecommerce-network
+
+  # Grafana for dashboards
+  grafana:
+    image: grafana/grafana:9.4.7
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    networks:
+      - ecommerce-network
+
+  # Data Generator Service - to simulate data
+  data-generator:
+    build:
+      context: ./data-generator
+      dockerfile: Dockerfile
+    container_name: data-generator
+    depends_on:
+      - kafka
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - DATA_INTERVAL_MS=1000  # Generate data every 1 second
+    volumes:
+      - ./data-generator:/app
+    networks:
+      - ecommerce-network
+
+  # Microservices
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    container_name: user-service
+    depends_on:
+      - kafka
+      - cassandra-user
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - CASSANDRA_CONTACT_POINTS=cassandra-user
+      - CASSANDRA_KEYSPACE=user_keyspace
+    ports:
+      - "8001:8000"
+    networks:
+      - ecommerce-network
+
+  sales-service:
+    build:
+      context: ./sales-service
+      dockerfile: Dockerfile
+    container_name: sales-service
+    depends_on:
+      - kafka
+      - cassandra-sales
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - CASSANDRA_CONTACT_POINTS=cassandra-sales
+      - CASSANDRA_KEYSPACE=sales_keyspace
+    ports:
+      - "8002:8000"
+    networks:
+      - ecommerce-network
+
+  inventory-service:
+    build:
+      context: ./inventory-service
+      dockerfile: Dockerfile
+    container_name: inventory-service
+    depends_on:
+      - kafka
+      - cassandra-inventory
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - CASSANDRA_CONTACT_POINTS=cassandra-inventory
+      - CASSANDRA_KEYSPACE=inventory_keyspace
+    ports:
+      - "8003:8000"
+    networks:
+      - ecommerce-network
+
+  analytics-service:
+    build:
+      context: ./analytics-service
+      dockerfile: Dockerfile
+    container_name: analytics-service
+    depends_on:
+      - kafka
+      - ksqldb-server
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KSQLDB_SERVER_URL=http://ksqldb-server:8088
+    ports:
+      - "8004:8000"
+    networks:
+      - ecommerce-network
+
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: api-gateway
+    depends_on:
+      - user-service
+      - sales-service
+      - inventory-service
+      - analytics-service
+    ports:
+      - "8000:8000"
+    environment:
+      - USER_SERVICE_URL=http://user-service:8000
+      - SALES_SERVICE_URL=http://sales-service:8000
+      - INVENTORY_SERVICE_URL=http://inventory-service:8000
+      - ANALYTICS_SERVICE_URL=http://analytics-service:8000
+    networks:
+      - ecommerce-network
+
+networks:
+  ecommerce-network:
+    driver: bridge
+
+volumes:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  cassandra-user-data:
+  cassandra-sales-data:
+  cassandra-inventory-data:
+  prometheus-data:
+  grafana-data:
