@@ -26,8 +26,15 @@ services:
 
   cassandra:
     image: cassandra:4.1
+    environment:
+      # Tell Cassandra to load the JMX exporter on port 7070
+      - EXTRA_JVM_OPTS=-javaagent:/opt/jmx/jmx_prometheus_javaagent.jar=7070:/etc/jmx/cassandra-jmx.yaml
+    volumes:
+      - ./prometheus-jmx/jmx_prometheus_javaagent.jar:/opt/jmx/jmx_prometheus_javaagent.jar:ro
+      - ./prometheus-jmx/cassandra-jmx.yaml:/etc/jmx/cassandra-jmx.yaml:ro
     ports:
-      - "9042:9042"
+      - "9042:9042"   # CQL
+      - "7070:7070"
     healthcheck:
       test: ["CMD", "cqlsh", "-e", "DESC KEYSPACES"]
       interval: 10s
@@ -45,10 +52,51 @@ services:
       sh -c "cqlsh cassandra -f /docker-entrypoint-initdb.d/init.cql"
     restart: "no"
 
+  prometheus:
+    image: docker.io/prom/prometheus:v3.3.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    command: "--config.file=/etc/prometheus/prometheus.yaml"
+    volumes:
+      - ./config/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: docker.io/grafana/grafana-oss:11.6.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+  
+  cassandra-exporter:
+    build:
+      context: ./exporter
+      dockerfile: Dockerfile
+    environment:
+      - CASSANDRA_CONTACT_POINTS=cassandra
+      - CASSANDRA_PORT=9042
+      - POLL_INTERVAL=30
+      - EXPORTER_PORT=9123
+    depends_on:
+      - cassandra
+    ports:
+      - "9123:9123"
+
+
   app:
     build: .
     environment:
-      - ROLE=producer    # or 'consumer'
+      - ROLE=producer  # or 'consumer'
     depends_on:
       - kafka
       - cassandra
+
+volumes:
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
