@@ -18,7 +18,7 @@ consumer = KafkaConsumer(
     enable_auto_commit=True
 )
 
-BATCH_SIZE = 100
+BATCH_SIZE = 10
 batch = BatchStatement(consistency_level=ConsistencyLevel.LOCAL_QUORUM)
 counter = 0
 

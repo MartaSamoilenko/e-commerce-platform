@@ -1,94 +1,109 @@
-import os
-import time
+import os, time, collections, logging
 from cassandra.cluster import Cluster
 from prometheus_client import start_http_server, Gauge
 
-# ─── CONFIG ──────────────────────────────────────────────────────────────────────
+
 CASSANDRA_CONTACT_POINTS = os.getenv("CASSANDRA_CONTACT_POINTS", "cassandra").split(",")
 CASSANDRA_PORT           = int(os.getenv("CASSANDRA_PORT", 9042))
-POLL_INTERVAL            = int(os.getenv("POLL_INTERVAL", 20))
+POLL_INTERVAL            = int(os.getenv("POLL_INTERVAL", 30))
 EXPORTER_PORT            = int(os.getenv("EXPORTER_PORT", 9123))
 
-SALES_KEYSPACE           = os.getenv("SALES_KEYSPACE", "ecommerce")
-
-SALES_TABLE              = os.getenv("SALES_TABLE", "sales")
-SALES_AMOUNT_COLUMN      = os.getenv("SALES_AMOUNT_COLUMN", "quantity")
-
-PRODUCT_TABLE            = os.getenv("PRODUCT_TABLE", "products")
-PRIDUCT_PRICE_COLUMN     = os.getenv("PRIDUCT_PRICE_COLUMN", "product_price")
+KS                       = os.getenv("KEYSPACE", "ecommerce")
+SALES_TBL                = os.getenv("SALES_TABLE", "sales")
+PRODUCT_TBL              = os.getenv("PRODUCT_TABLE", "products")
+INVENTORY_TBL            = os.getenv("INVENTORY_TABLE", "inventory")
+STORES_TBL               = os.getenv("STORES_TABLE", "stores")
 
 
-# ─── METRIC DEFINITIONS ──────────────────────────────────────────────────────────
-row_count_gauge = Gauge(
-    'sales_table_row_count',
-    'Number of rows in the sales table',
-    ['keyspace', 'table']
-)
+row_count_gauge       = Gauge('ecommerce_sales_rows',            'Row count of sales table')
+total_qty_gauge       = Gauge('ecommerce_sales_total_quantity',  'Total quantity sold')
+total_revenue_gauge   = Gauge('ecommerce_revenue_total',         'Total revenue')
 
-total_amount_gauge = Gauge(
-    'sales_table_total_amount',
-    f"Sum of `{SALES_AMOUNT_COLUMN}` in sales table",
-    ['keyspace', 'table']
-)
+revenue_product_gauge = Gauge('ecommerce_revenue_by_product',
+                              'Revenue per product',
+                              ['product_id', 'product_name'])
 
-avg_amount_gauge = Gauge(
-    'sales_table_avg_amount',
-    f"Average of `{SALES_AMOUNT_COLUMN}` in sales table",
-    ['keyspace', 'table']
-)
+revenue_store_gauge   = Gauge('ecommerce_revenue_by_store',
+                              'Revenue per store',
+                              ['store_id', 'store_name'])
 
-avg_revenue_per_minute_gauge = Gauge(
-    'sales_table_avg_revenue_per_minute',
-    f"Average of revenue in sales per minute",
-    ['keyspace', 'table']
-)
+inventory_gauge       = Gauge('ecommerce_inventory_stock',
+                              'Stock available per product per store',
+                              ['product_id', 'store_id'])
 
-# ─── COLLECT METRICS ────────────────────────────────────────────────────────────────
+
+session = None
+def get_session():
+    global session
+    if session is None:
+        cluster = Cluster(contact_points=CASSANDRA_CONTACT_POINTS, port=CASSANDRA_PORT)
+        session = cluster.connect(KS)
+    return session
+
+def dict_from_rows(rows, key_col, *val_cols):
+    """Utility to explode a result set into a dict keyed by key_col."""
+    return {getattr(r, key_col): (r if len(val_cols)==0 else
+            getattr(r, val_cols[0]) if len(val_cols)==1 else
+            tuple(getattr(r, c) for c in val_cols))
+            for r in rows}
+
+
 def collect_metrics():
-    cluster = Cluster(contact_points=CASSANDRA_CONTACT_POINTS, port=CASSANDRA_PORT)
-    session = cluster.connect()
+    s = get_session()
 
-    try:
-        full_table = f"{SALES_KEYSPACE}.{SALES_TABLE}"
+    products = dict_from_rows(
+        s.execute(f"SELECT product_id, product_name, product_price FROM {PRODUCT_TBL}"),
+        "product_id", "product_name", "product_price")
+    
+    print(products)
 
-        # 1) Row count
-        row = session.execute(f"SELECT count(*) FROM {full_table}").one()
-        count = row[0] if row else 0
-        row_count_gauge.labels(keyspace=SALES_KEYSPACE, table=SALES_TABLE).set(count)
+    stores = dict_from_rows(
+        s.execute(f"SELECT store_id, store_name FROM {STORES_TBL}"),
+        "store_id", "store_name")
+    
 
-        # 2) Total amount
-        row = session.execute(
-            f"SELECT sum({SALES_AMOUNT_COLUMN}) FROM {full_table}"
-        ).one()
-        total = row[0] if row and row[0] is not None else 0
-        total_amount_gauge.labels(keyspace=SALES_KEYSPACE, table=SALES_TABLE).set(total)
+    for row in s.execute(f"SELECT product_id, store_id_quantity FROM {INVENTORY_TBL}"):
+        for store_id, qty in row.store_id_quantity.items():
+            inventory_gauge.labels(str(row.product_id), str(store_id)).set(qty)
 
-        # 3) Average amount
-        row = session.execute(
-            f"SELECT avg({SALES_AMOUNT_COLUMN}) FROM {full_table}"
-        ).one()
-        avg = row[0] if row and row[0] is not None else 0
-        avg_amount_gauge.labels(keyspace=SALES_KEYSPACE, table=SALES_TABLE).set(avg)
+    total_rows = 0
+    total_qty  = 0
+    revenue_by_product = collections.defaultdict(float)
+    revenue_by_store   = collections.defaultdict(float)
 
-        # 4) Average amount per minute
-        row = session.execute(
-            f"SELECT avg({SALES_AMOUNT_COLUMN}) FROM {full_table}"
-        ).one()
-        avg = row[0] if row and row[0] is not None else 0
-        avg_revenue_per_minute_gauge.labels(keyspace=SALES_KEYSPACE, table=SALES_TABLE).set(avg)
+    for row in s.execute(f"SELECT product_id, quantity, store_id FROM {SALES_TBL}"):
+        print(row)
+        total_rows += 1
+        total_qty  += row.quantity
 
-    finally:
-        session.shutdown()
-        cluster.shutdown()
+        price = products.get(row.product_id, ("UNKNOWN", 0.0))[1]  
+        revenue = row.quantity * price
+        revenue_by_product[row.product_id] += revenue
+        revenue_by_store[row.store_id]     += revenue
 
-# ─── MAIN ─────────────────────────────────────────────────────────────────────────
-if __name__ == '__main__':
+    row_count_gauge.set(total_rows)
+    total_qty_gauge.set(total_qty)
+    total_revenue = sum(revenue_by_product.values())
+    total_revenue_gauge.set(total_revenue)
+
+    revenue_product_gauge.clear()
+    for pid, rev in revenue_by_product.items():
+        pname = products[pid][0] if pid in products else "UNKNOWN"
+        revenue_product_gauge.labels(str(pid), pname).set(rev)
+
+    revenue_store_gauge.clear()
+    for sid, rev in revenue_by_store.items():
+        sname = stores.get(sid, "UNKNOWN")
+        revenue_store_gauge.labels(str(sid), sname).set(rev)
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     start_http_server(EXPORTER_PORT)
-    print(f"Exporter listening on :{EXPORTER_PORT}, polling every {POLL_INTERVAL}s")
+    logging.info("Exporter up on :%s (poll every %ss)", EXPORTER_PORT, POLL_INTERVAL)
 
     while True:
         try:
             collect_metrics()
-        except Exception as e:
-            print("Error collecting metrics:", e)
+        except Exception as ex:
+            logging.exception("Failed to collect metrics: %s", ex)
         time.sleep(POLL_INTERVAL)

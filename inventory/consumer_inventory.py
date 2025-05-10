@@ -46,6 +46,6 @@ for msg in consumer:
 
     if counter >= BATCH_SIZE:
         session.execute(batch)
-        print(f"← wrote batch of {counter} items to Cassandra")
+        # print(f"← wrote batch of {counter} items to Cassandra")
         batch = BatchStatement(consistency_level=ConsistencyLevel.LOCAL_QUORUM)
         counter = 0
