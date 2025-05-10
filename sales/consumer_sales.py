@@ -8,8 +8,10 @@ import uuid
 cluster = Cluster(['cassandra'])
 session = cluster.connect('ecommerce')
 
+TOPIC = 'sales'
+
 consumer = KafkaConsumer(
-    'sales',
+    TOPIC,
     bootstrap_servers='kafka:9092',
     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
     auto_offset_reset='earliest',

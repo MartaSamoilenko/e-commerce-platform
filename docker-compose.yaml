@@ -87,13 +87,69 @@ services:
       - "9123:9123"
 
 
-  app:
-    build: .
-    environment:
-      - ROLE=producer  # or 'consumer'
+  sales_producer:
+    build: ./sales
     depends_on:
-      - kafka
-      - cassandra
+      cassandra-init:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_started
+    restart: 'always'
+    environment:
+      - ROLE=sales_producer
+
+
+  sales_consumer:
+    build: ./sales
+    depends_on:
+      cassandra-init:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_started
+    restart: 'always'
+    environment:
+      - ROLE=sales_consumer
+
+  inventory_producer:
+    build: ./inventory
+    depends_on:
+      cassandra-init:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_started
+    restart: 'always'
+    environment:
+      - ROLE=inventory_producer
+
+
+  inventory_consumer:
+    build: ./inventory
+    depends_on:
+      cassandra-init:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_started
+    restart: 'always'
+    environment:
+      - ROLE=inventory_consumer
+
+  app:
+    build: ./app
+    environment:
+      - ROLE=app
+    depends_on:
+      cassandra-init:
+        condition: service_completed_successfully
+      sales_producer:
+        condition: service_started
+      sales_consumer:
+        condition: service_started
+      inventory_producer:
+        condition: service_started
+      inventory_consumer:
+        condition: service_started
+    ports:
+      - "8000:8000" 
 
 volumes:
   prometheus-data:

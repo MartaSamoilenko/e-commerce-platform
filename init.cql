@@ -3,6 +3,12 @@ CREATE KEYSPACE IF NOT EXISTS ecommerce
 
 USE ecommerce;
 
+CREATE TABLE IF NOT EXISTS inventory (
+  product_id uuid PRIMARY KEY,
+  store_id_quantity  map<uuid, int>,
+  ts        timestamp
+);
+
 CREATE TABLE IF NOT EXISTS sales (
   sale_id     uuid PRIMARY KEY,
   product_id  uuid,

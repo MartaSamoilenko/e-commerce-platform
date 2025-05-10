@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import os
 import time
 from cassandra.cluster import Cluster
@@ -11,9 +10,13 @@ POLL_INTERVAL            = int(os.getenv("POLL_INTERVAL", 20))
 EXPORTER_PORT            = int(os.getenv("EXPORTER_PORT", 9123))
 
 SALES_KEYSPACE           = os.getenv("SALES_KEYSPACE", "ecommerce")
+
 SALES_TABLE              = os.getenv("SALES_TABLE", "sales")
-SALES_AMOUNT_COLUMN      = os.getenv("SALES_AMOUNT_COLUMN", "quantity")  
-# if your sales table has a column called "amount" holding the sale value
+SALES_AMOUNT_COLUMN      = os.getenv("SALES_AMOUNT_COLUMN", "quantity")
+
+PRODUCT_TABLE            = os.getenv("PRODUCT_TABLE", "products")
+PRIDUCT_PRICE_COLUMN     = os.getenv("PRIDUCT_PRICE_COLUMN", "product_price")
+
 
 # ─── METRIC DEFINITIONS ──────────────────────────────────────────────────────────
 row_count_gauge = Gauge(
@@ -31,6 +34,12 @@ total_amount_gauge = Gauge(
 avg_amount_gauge = Gauge(
     'sales_table_avg_amount',
     f"Average of `{SALES_AMOUNT_COLUMN}` in sales table",
+    ['keyspace', 'table']
+)
+
+avg_revenue_per_minute_gauge = Gauge(
+    'sales_table_avg_revenue_per_minute',
+    f"Average of revenue in sales per minute",
     ['keyspace', 'table']
 )
 
@@ -60,6 +69,13 @@ def collect_metrics():
         ).one()
         avg = row[0] if row and row[0] is not None else 0
         avg_amount_gauge.labels(keyspace=SALES_KEYSPACE, table=SALES_TABLE).set(avg)
+
+        # 4) Average amount per minute
+        row = session.execute(
+            f"SELECT avg({SALES_AMOUNT_COLUMN}) FROM {full_table}"
+        ).one()
+        avg = row[0] if row and row[0] is not None else 0
+        avg_revenue_per_minute_gauge.labels(keyspace=SALES_KEYSPACE, table=SALES_TABLE).set(avg)
 
     finally:
         session.shutdown()
