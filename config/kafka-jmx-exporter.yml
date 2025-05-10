@@ -1,0 +1,8 @@
+startDelaySeconds: 0
+hostPort: 0.0.0.0:5556
+rules:
+  - pattern: "kafka.server<type=(.+), name=(.+)><>Value"
+    name: "kafka_$1_$2"
+    type: GAUGE
+    labels:
+      clientId: "$2"
