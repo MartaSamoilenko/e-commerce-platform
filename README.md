@@ -6,7 +6,7 @@ flowchart TB
     end
 
     subgraph "Data Ingestion"
-        Kafka["Apache Kafka (Stream Processing)"]
+        Kafka["Apache Kafka"]
 
         Transactions --> Kafka
         InventoryUpdates --> Kafka
