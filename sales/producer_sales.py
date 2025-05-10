@@ -75,6 +75,6 @@ if __name__ == '__main__':
         if not sale:
             continue
         producer.send(TOPIC, sale)
-        print(f"→ produced {sale}")
+        # print(f"→ produced {sale}")
         producer.flush()
         time.sleep(1) 

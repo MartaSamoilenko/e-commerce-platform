@@ -92,6 +92,6 @@ if __name__ == '__main__':
             continue
         
         producer.send(TOPIC, item)
-        print(f"→ produced {item}")
+        # print(f"→ produced {item}")
         producer.flush()
         time.sleep(0.05) 
