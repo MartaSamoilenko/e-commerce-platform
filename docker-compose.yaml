@@ -1,8 +1,6 @@
-version: '3.8'
-
 services:
   zookeeper:
-    image: confluentinc/cp-zookeeper:7.4.0
+    image: confluentinc/cp-zookeeper:latest
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
@@ -15,6 +13,11 @@ services:
       - zookeeper
     ports:
       - "9092:9092"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -25,9 +28,8 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
 
   cassandra:
-    image: cassandra:4.1
+    image: cassandra:latest
     environment:
-      # Tell Cassandra to load the JMX exporter on port 7070
       - EXTRA_JVM_OPTS=-javaagent:/opt/jmx/jmx_prometheus_javaagent.jar=7070:/etc/jmx/cassandra-jmx.yaml
     volumes:
       - ./prometheus-jmx/jmx_prometheus_javaagent.jar:/opt/jmx/jmx_prometheus_javaagent.jar:ro
@@ -42,8 +44,10 @@ services:
       retries: 10
 
   cassandra-init:
-    image: cassandra:4.1
+    image: cassandra:latest
     depends_on:
+      kafka:
+        condition: service_healthy
       cassandra:
         condition: service_healthy
     volumes:
@@ -58,6 +62,11 @@ services:
     ports:
       - "9090:9090"
     command: "--config.file=/etc/prometheus/prometheus.yaml"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
     volumes:
       - ./config/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
       - prometheus-data:/prometheus
@@ -68,21 +77,35 @@ services:
     container_name: grafana
     ports:
       - "3000:3000"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
     volumes:
       - grafana-data:/var/lib/grafana
+      # 1) auto-provision data sources
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      # 2) auto-provision dashboards
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      # 3) the actual dashboard JSON files
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     restart: unless-stopped
   
   cassandra-exporter:
     build:
       context: ./exporter
       dockerfile: Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
     environment:
       - CASSANDRA_CONTACT_POINTS=cassandra
       - CASSANDRA_PORT=9042
       - POLL_INTERVAL=30
       - EXPORTER_PORT=9123
-    depends_on:
-      - cassandra
     ports:
       - "9123:9123"
 
@@ -93,7 +116,10 @@ services:
       cassandra-init:
         condition: service_completed_successfully
       kafka:
-        condition: service_started
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+
     restart: 'always'
     environment:
       - ROLE=sales_producer
@@ -105,7 +131,9 @@ services:
       cassandra-init:
         condition: service_completed_successfully
       kafka:
-        condition: service_started
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
     restart: 'always'
     environment:
       - ROLE=sales_consumer
@@ -116,7 +144,9 @@ services:
       cassandra-init:
         condition: service_completed_successfully
       kafka:
-        condition: service_started
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
     restart: 'always'
     environment:
       - ROLE=inventory_producer
@@ -128,7 +158,9 @@ services:
       cassandra-init:
         condition: service_completed_successfully
       kafka:
-        condition: service_started
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
     restart: 'always'
     environment:
       - ROLE=inventory_consumer
