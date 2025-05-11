@@ -1,0 +1,1082 @@
+
+
+##### ./sales/Dockerfile #####
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY producer_sales.py consumer_sales.py ./
+
+CMD ["bash", "-c", "case \"$ROLE\" in \
+  sales_producer) python producer_sales.py ;; \
+  sales_consumer) python consumer_sales.py ;; \
+  *) echo \"Unknown ROLE=$ROLE\"; exit 1 ;; esac"]
+
+##### ./sales/producer_sales.py #####
+
+import json, time, uuid, random
+from datetime import datetime
+from kafka import KafkaProducer
+from cassandra.cluster import Cluster
+
+cluster = Cluster(['cassandra'])
+session = cluster.connect('ecommerce')
+
+TOPIC = 'sales'
+
+producer = KafkaProducer(
+    bootstrap_servers='kafka:9092',
+    value_serializer=lambda v: json.dumps(v).encode('utf-8')
+)
+
+products = {uuid.uuid4() : {'product_name': 'product_1', 'product_price': round(random.uniform(5, 100), 2)}, 
+            uuid.uuid4(): {'product_name': 'product_2', 'product_price': round(random.uniform(5, 100), 2)}, 
+            uuid.uuid4() : {'product_name': 'product_3', 'product_price': round(random.uniform(5, 100), 2)}, 
+            uuid.uuid4() : {'product_name': 'product_4', 'product_price': round(random.uniform(5, 100), 2)}}
+
+users = {uuid.uuid4() : 'user_1', 
+         uuid.uuid4() : 'user_2', 
+         uuid.uuid4() : 'user_3', 
+         uuid.uuid4() : 'user_4'}
+
+
+
+
+def init_users():
+    insert_stmt = session.prepare("""
+    INSERT INTO users (user_id, user_name)
+    VALUES (?, ?)
+    """)
+
+    for user_id, user_name in users.items():
+        session.execute(insert_stmt, (user_id, user_name))
+
+def get_random_item_from_inventory():
+    query = session.prepare("""
+        SELECT product_id, store_id_quantity, ts
+        FROM inventory
+        LIMIT 1
+    """)
+    
+    return session.execute(query).one()
+
+
+def gen_sale():
+
+    item = get_random_item_from_inventory()
+
+    if item :
+
+        store_id = random.choice(list(item.store_id_quantity.keys()))
+        quantity = random.randint(1, item.store_id_quantity[store_id])
+
+        return {
+            'sale_id': str(uuid.uuid4()),
+            'product_id': str(item.product_id), #item.product_id,
+            'quantity': quantity,
+            'ts': datetime.utcnow().isoformat(),
+            'user_id': str(random.choice(list(users.keys()))),
+            'store_id': str(store_id)
+        }
+    
+    return None
+    
+
+if __name__ == '__main__':
+    
+    init_users()
+
+    while True:
+        sale = gen_sale()
+        if not sale:
+            continue
+        producer.send(TOPIC, sale)
+        # print(f"→ produced {sale}")
+        producer.flush()
+        time.sleep(1) 
+
+##### ./sales/consumer_sales.py #####
+
+import json
+from datetime import datetime
+from kafka import KafkaConsumer
+from cassandra.cluster import Cluster
+from cassandra.query import BatchStatement, ConsistencyLevel
+import uuid
+
+cluster = Cluster(['cassandra'])
+session = cluster.connect('ecommerce')
+
+TOPIC = 'sales'
+
+consumer = KafkaConsumer(
+    TOPIC,
+    bootstrap_servers='kafka:9092',
+    value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+    auto_offset_reset='earliest',
+    enable_auto_commit=True
+)
+
+BATCH_SIZE = 10
+batch = BatchStatement(consistency_level=ConsistencyLevel.LOCAL_QUORUM)
+counter = 0
+
+insert_stmt = session.prepare("""
+  INSERT INTO sales (sale_id, product_id, quantity, ts, user_id, store_id)
+  VALUES (?, ?, ?, ?, ?, ?)
+""")
+
+for msg in consumer:
+    sale = msg.value
+    sale_ts = datetime.fromisoformat(sale['ts'])
+    
+    batch.add(
+        insert_stmt,
+        (
+            uuid.UUID(sale['sale_id']),
+            uuid.UUID(sale['product_id']),
+            sale['quantity'],
+            sale_ts,
+            uuid.UUID(sale['user_id']),
+            uuid.UUID(sale['store_id'])
+        )
+    )
+    counter += 1
+
+    if counter >= BATCH_SIZE:
+        session.execute(batch)
+        print(f"← wrote batch of {counter} sales to Cassandra")
+        batch = BatchStatement(consistency_level=ConsistencyLevel.LOCAL_QUORUM)
+        counter = 0
+
+##### ./init.cql #####
+
+CREATE KEYSPACE IF NOT EXISTS ecommerce
+  WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'};
+
+USE ecommerce;
+
+CREATE TABLE IF NOT EXISTS inventory (
+  product_id uuid PRIMARY KEY,
+  store_id_quantity  map<uuid, int>,
+  ts        timestamp
+);
+
+CREATE TABLE IF NOT EXISTS sales (
+  sale_id     uuid PRIMARY KEY,
+  product_id  uuid,
+  quantity    int,
+  ts          timestamp,
+  user_id     uuid,
+  store_id    uuid
+);
+
+CREATE TABLE IF NOT EXISTS stores (
+    store_id uuid   PRIMARY KEY,
+    store_name      text 
+);
+
+CREATE TABLE IF NOT EXISTS products (
+    product_id    uuid PRIMARY KEY,
+    product_name  text,
+    product_price double
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    user_id uuid PRIMARY KEY,
+    user_name text
+);
+
+
+##### ./config/kafka-jmx-exporter.yml #####
+
+startDelaySeconds: 0
+hostPort: 0.0.0.0:5556
+rules:
+  - pattern: "kafka.server<type=(.+), name=(.+)><>Value"
+    name: "kafka_$1_$2"
+    type: GAUGE
+    labels:
+      clientId: "$2"
+
+
+##### ./config/prometheus.yaml #####
+
+---
+global:
+  scrape_interval: 15s  # By default, scrape targets every 15 seconds.
+
+  # Attach these labels to any time series or alerts when communicating with
+  # external systems (federation, remote storage, Alertmanager).
+  # external_labels:
+  #  monitor: 'codelab-monitor'
+
+# A scrape configuration containing exactly one endpoint to scrape:
+# Here it's Prometheus itself.
+scrape_configs:
+  # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
+  - job_name: 'prometheus'
+    # Override the global default and scrape targets from this job every 5 seconds.
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['prometheus:9090']
+
+# # Example job for node_exporter
+#   - job_name: 'node_exporter'
+#     static_configs:
+#       - targets: ['node_exporter:9100']
+
+# # Example job for cadvisor
+#   - job_name: 'cadvisor'
+#     static_configs:
+#       - targets: ['cadvisor:8080']
+  - job_name: 'cassandra'
+    static_configs:
+      - targets: ['cassandra:7199']
+
+  - job_name: 'cassandra_custom'
+    metrics_path: /metrics   # default for prometheus_client
+    static_configs:
+      - targets: ['cassandra-exporter:9123']
+        labels:
+          cluster: test_cluster
+  
+  - job_name: 'pushgateway'
+    honor_labels: true     # keep labels set by Pushgateway
+    static_configs:
+      - targets: ['pushgateway:9091']
+
+
+
+
+
+##### ./inventory/Dockerfile #####
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY producer_inventory.py consumer_inventory.py ./
+
+CMD ["bash", "-c", "case \"$ROLE\" in \
+  inventory_producer) python producer_inventory.py ;; \
+  inventory_consumer) python consumer_inventory.py ;; \
+  *) echo \"Unknown ROLE=$ROLE\"; exit 1 ;; esac"]
+
+
+##### ./inventory/producer_inventory.py #####
+
+import json, time, uuid, random
+from datetime import datetime
+from kafka import KafkaProducer
+from cassandra.cluster import Cluster
+
+cluster = Cluster(['cassandra'])
+session = cluster.connect('ecommerce')
+
+TOPIC = 'items'
+
+producer = KafkaProducer(
+    bootstrap_servers='kafka:9092',
+    value_serializer=lambda v: json.dumps(v).encode('utf-8')
+)
+
+products = {uuid.uuid4() : {'product_name': 'product_1', 'product_price': round(random.uniform(5, 100), 2)}, 
+            uuid.uuid4(): {'product_name': 'product_2', 'product_price': round(random.uniform(5, 100), 2)}, 
+            uuid.uuid4() : {'product_name': 'product_3', 'product_price': round(random.uniform(5, 100), 2)}, 
+            uuid.uuid4() : {'product_name': 'product_4', 'product_price': round(random.uniform(5, 100), 2)}}
+
+stores = {uuid.uuid4() : 'store_1', 
+          uuid.uuid4() : 'store_2', 
+          uuid.uuid4() : 'store_3', 
+          uuid.uuid4() : 'store_4'}
+
+def init_products():
+    insert_stmt = session.prepare("""
+    INSERT INTO products (product_id, product_name, product_price)
+    VALUES (?, ?, ?)
+    """)
+
+    for product_id, product in products.items():
+        session.execute(insert_stmt, (product_id, product['product_name'], product['product_price']))
+
+def init_stores():
+    insert_stmt = session.prepare("""
+    INSERT INTO stores (store_id, store_name)
+    VALUES (?, ?)
+    """)
+
+    for store_id, store_name in stores.items():
+        session.execute(insert_stmt, (store_id, store_name))
+
+def get_item_from_inventory_by_id(product_id : uuid.UUID):
+
+    query = session.prepare("""
+        SELECT product_id, store_id_quantity, ts
+        FROM inventory
+        WHERE product_id = ?
+        LIMIT 1
+    """)
+    
+    return session.execute(query, (product_id,)).one()
+
+def gen_inventory():
+    product_id = random.choice(list(products.keys()))
+    quantity = random.randint(1, 5)
+    store_id = random.choice(list(stores.keys()))
+
+    item = get_item_from_inventory_by_id(product_id)
+    if item:
+
+        if store_id in item.store_id_quantity:
+            item.store_id_quantity[store_id] += quantity
+        else:
+            item.store_id_quantity[store_id] = quantity
+
+        # comvert store_id in store_id_quantity to string
+        store_id_quantity = {str(k): v for k, v in item.store_id_quantity.items()}
+
+        return {
+            'product_id': str(item.product_id),
+            'ts': datetime.utcnow().isoformat(),
+            'store_id_quantity': store_id_quantity
+        }
+    
+    else:
+        return {
+            'product_id': str(product_id), #product_id,
+            'ts': datetime.utcnow().isoformat(),
+            'store_id_quantity': {str(product_id): quantity}
+        }
+
+if __name__ == '__main__':
+    
+    init_stores()
+    init_products()
+    
+    while True:
+        item = gen_inventory()
+        if not item:
+            continue
+        
+        producer.send(TOPIC, item)
+        # print(f"→ produced {item}")
+        producer.flush()
+        time.sleep(0.05) 
+
+
+##### ./inventory/consumer_inventory.py #####
+
+import json
+from datetime import datetime
+from kafka import KafkaConsumer
+from cassandra.cluster import Cluster
+from cassandra.query import BatchStatement, ConsistencyLevel
+import uuid
+
+cluster = Cluster(['cassandra'])
+session = cluster.connect('ecommerce')
+
+TOPIC = 'items'
+
+consumer = KafkaConsumer(
+    TOPIC,
+    bootstrap_servers='kafka:9092',
+    value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+    auto_offset_reset='earliest',
+    enable_auto_commit=True
+)
+
+BATCH_SIZE = 10
+batch = BatchStatement(consistency_level=ConsistencyLevel.LOCAL_QUORUM)
+counter = 0
+
+insert_stmt = session.prepare("""
+  INSERT INTO inventory (product_id, store_id_quantity, ts)
+  VALUES (?, ?, ?)
+""")
+
+for msg in consumer:
+    item = msg.value
+    item_ts = datetime.fromisoformat(item['ts'])
+
+    item['store_id_quantity'] = {uuid.UUID(k): v for k, v in item['store_id_quantity'].items()}
+    
+    batch.add(
+        insert_stmt,
+        (
+            uuid.UUID(item['product_id']),
+            item['store_id_quantity'],
+            item_ts,
+        )
+    )
+    counter += 1
+
+    if counter >= BATCH_SIZE:
+        session.execute(batch)
+        # print(f"← wrote batch of {counter} items to Cassandra")
+        batch = BatchStatement(consistency_level=ConsistencyLevel.LOCAL_QUORUM)
+        counter = 0
+
+##### ./spark/Dockerfile #####
+
+FROM bitnami/spark:latest
+
+USER root
+WORKDIR /opt/app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY stream_job.py .
+
+CMD ["spark-submit", "--master", "spark://spark-master:7077", "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.apache.kafka:kafka-clients:3.7.0", "/opt/app/stream_job.py"]
+
+
+##### ./spark/stream_job.py #####
+
+import json, os, uuid, logging
+from datetime import datetime, timezone, timedelta
+
+from pyspark.sql import SparkSession, functions as F
+from pyspark.sql.types import (
+    StructType, StructField, StringType, IntegerType, TimestampType)
+
+from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
+
+spark = (
+    SparkSession.builder
+    .appName("sales-stream-agg")
+    .config("spark.sql.shuffle.partitions", "1")         
+    .getOrCreate()
+)
+
+spark.sparkContext.setLogLevel("WARN")
+
+schema = (
+    StructType()
+    .add("sale_id",  StringType())   # UUID as str
+    .add("product_id", StringType())
+    .add("quantity", IntegerType())
+    .add("ts", StringType())
+    .add("user_id", StringType())
+    .add("store_id", StringType())
+)
+
+BOOTSTRAP_SERVERS = os.getenv("BOOTSTRAP_SERVERS", "kafka:9092")
+PUSHGW            = os.getenv("PUSHGATEWAY", "pushgateway:9091")
+
+raw = (
+    spark.readStream.format("kafka")
+    .option("kafka.bootstrap.servers", "kafka:9092")
+    .option("subscribe", "sales")
+    .option("startingOffsets", "earliest")
+    .load()
+)
+
+sales = (
+    raw.select(F.from_json(F.col("value").cast("string"), schema).alias("data"))
+        .select("data.*")
+        .withColumn("event_time",
+                    F.to_timestamp("ts").cast(TimestampType()))
+)
+
+windowed = (
+    sales
+    .withWatermark("event_time", "2 minutes")
+    .groupBy(
+        F.window("event_time", "1 minute").alias("w"),
+        "product_id",
+        "store_id",
+    )
+    .agg(
+        F.count("*").alias("sales_count"),
+        F.sum("quantity").alias("total_qty")
+    )
+)
+
+
+def push_metrics(batch_df, batch_id):
+    """
+    Called for every micro-batch (~5 s). Converts the current 1-min window
+    aggregations to Prometheus metrics and pushes them to the gateway.
+    """
+    registry = CollectorRegistry()
+
+    g_sales = Gauge(
+        "ecommerce_sales_count_window",
+        "Sales count per product & store (1-min window)",
+        ["product_id", "store_id"],
+        registry=registry)
+    g_qty = Gauge(
+        "ecommerce_quantity_window",
+        "Quantity per product & store (1-min window)",
+        ["product_id", "store_id"],
+        registry=registry)
+
+    rows = (
+        batch_df
+        .select("product_id", "store_id", "sales_count", "total_qty")
+        .collect()
+    )
+
+    for r in rows:
+        g_sales.labels(r.product_id, r.store_id).set(r.sales_count)
+        g_qty.labels(r.product_id, r.store_id).set(r.total_qty)
+
+    group_key = datetime.utcnow().strftime("%Y%m%d%H%M") + "-" + str(uuid.uuid4())[:8]
+
+    push_to_gateway(PUSHGW, job="spark_sales_stream", grouping_key={"window": group_key}, registry=registry)
+    print(f"Pushed {len(rows)} window rows to Pushgateway")
+
+
+# ------------------------------------------------------------------ stream → foreachBatch
+query = (
+    windowed.writeStream
+    .outputMode("update")                 #
+    .trigger(processingTime="5 seconds")
+    .foreachBatch(push_metrics)
+    .start()
+)
+
+query.awaitTermination()
+
+
+##### ./docker-compose.yaml #####
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    extra_hosts:                                                                
+      - "host.docker.internal:host-gateway" 
+
+  cassandra:
+    image: cassandra:latest
+    environment:
+      - EXTRA_JVM_OPTS=-javaagent:/opt/jmx/jmx_prometheus_javaagent.jar=7070:/etc/jmx/cassandra-jmx.yaml
+    volumes:
+      - ./prometheus-jmx/jmx_prometheus_javaagent.jar:/opt/jmx/jmx_prometheus_javaagent.jar:ro
+      - ./prometheus-jmx/cassandra-jmx.yaml:/etc/jmx/cassandra-jmx.yaml:ro
+    ports:
+      - "9042:9042"   # CQL
+      - "7070:7070"
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "DESC KEYSPACES"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  cassandra-init:
+    image: cassandra:latest
+    depends_on:
+      kafka:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./init.cql:/docker-entrypoint-initdb.d/init.cql:ro
+    entrypoint: >
+      sh -c "cqlsh cassandra -f /docker-entrypoint-initdb.d/init.cql"
+    restart: "no"
+
+  prometheus:
+    image: docker.io/prom/prometheus:v3.3.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    command: "--config.file=/etc/prometheus/prometheus.yaml"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./config/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: docker.io/grafana/grafana-oss:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - grafana-data:/var/lib/grafana
+      # 1) auto-provision data sources
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      # 2) auto-provision dashboards
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      # 3) the actual dashboard JSON files
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    restart: unless-stopped
+  
+  cassandra-exporter:
+    build:
+      context: ./exporter
+      dockerfile: Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+    environment:
+      - CASSANDRA_CONTACT_POINTS=cassandra
+      - CASSANDRA_PORT=9042
+      - POLL_INTERVAL=30
+      - EXPORTER_PORT=9123
+    ports:
+      - "9123:9123"
+
+
+  sales_producer:
+    build: ./sales
+    depends_on:
+      cassandra-init:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+    restart: 'always'
+    environment:
+      - ROLE=sales_producer
+
+
+  sales_consumer:
+    build: ./sales
+    depends_on:
+      cassandra-init:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+    restart: 'always'
+    environment:
+      - ROLE=sales_consumer
+
+  inventory_producer:
+    build: ./inventory
+    depends_on:
+      cassandra-init:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+    restart: 'always'
+    environment:
+      - ROLE=inventory_producer
+
+
+  inventory_consumer:
+    build: ./inventory
+    depends_on:
+      cassandra-init:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+    restart: 'always'
+    environment:
+      - ROLE=inventory_consumer
+  
+  # -------------------------------------------------- SPARK
+  spark-master:
+    image: bitnami/spark:latest
+    environment:
+      - SPARK_MODE=master
+    ports:            
+      - "8080:8080"   
+      - "7077:7077"  
+    depends_on:
+      kafka:
+        condition: service_healthy
+      sales_producer:
+        condition: service_healthy
+
+  spark-worker:
+    image: bitnami/spark:latest
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_WORKER_CORES=2
+    ports:
+      - "8081:8081"  
+    extra_hosts:                                                                
+      - "host.docker.internal:host-gateway" 
+
+  pushgateway:
+    image: prom/pushgateway:latest
+    restart: unless-stopped
+    ports:
+      - "9091:9091"
+
+  spark_job:
+    build: ./spark
+    depends_on:
+      - spark-master
+    environment:
+      - BOOTSTRAP_SERVERS=kafka:9092
+      - PUSHGATEWAY=pushgateway:9091
+    extra_hosts:                                                                
+      - "host.docker.internal:host-gateway"
+
+
+volumes:
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+
+##### ./grafana/provisioning/datasources/datasource.yaml #####
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+
+
+
+##### ./grafana/provisioning/dashboards/dashboards.yaml #####
+
+apiVersion: 1
+
+providers:
+  - name: 'templated-dashboards'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+
+
+
+##### ./grafana/dashboards/sales_dashboards.json #####
+
+{
+    "annotations": {
+      "list": [
+        {
+          "builtIn": 1,
+          "datasource": {
+            "type": "grafana",
+            "uid": "-- Grafana --"
+          },
+          "enable": true,
+          "hide": true,
+          "iconColor": "rgba(0, 211, 255, 1)",
+          "name": "Annotations & Alerts",
+          "type": "dashboard"
+        }
+      ]
+    },
+    "editable": true,
+    "fiscalYearStartMonth": 0,
+    "graphTooltip": 0,
+    "id": 1,
+    "links": [],
+    "panels": [
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "aelgvy6uj6fpcd"
+        },
+        "description": "here is a row for sales table",
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "custom": {
+              "axisBorderShow": false,
+              "axisCenteredZero": false,
+              "axisColorMode": "text",
+              "axisLabel": "Sales Count",
+              "axisPlacement": "auto",
+              "barAlignment": 0,
+              "barWidthFactor": 0.6,
+              "drawStyle": "line",
+              "fillOpacity": 0,
+              "gradientMode": "none",
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "viz": false
+              },
+              "insertNulls": false,
+              "lineInterpolation": "linear",
+              "lineStyle": {
+                "dash": [
+                  10,
+                  10
+                ],
+                "fill": "dash"
+              },
+              "lineWidth": 3,
+              "pointSize": 5,
+              "scaleDistribution": {
+                "type": "linear"
+              },
+              "showPoints": "auto",
+              "spanNulls": false,
+              "stacking": {
+                "group": "A",
+                "mode": "none"
+              },
+              "thresholdsStyle": {
+                "mode": "off"
+              }
+            },
+            "mappings": [
+              {
+                "options": {
+                  "rows": {
+                    "color": "semi-dark-red",
+                    "index": 0,
+                    "text": "Sales Row"
+                  }
+                },
+                "type": "value"
+              }
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green"
+                },
+                {
+                  "color": "red",
+                  "value": 80
+                }
+              ]
+            }
+          },
+          "overrides": []
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 0
+        },
+        "id": 1,
+        "options": {
+          "legend": {
+            "calcs": [],
+            "displayMode": "list",
+            "placement": "bottom",
+            "showLegend": true
+          },
+          "tooltip": {
+            "hideZeros": false,
+            "mode": "single",
+            "sort": "none"
+          }
+        },
+        "pluginVersion": "11.6.0",
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "aelgvy6uj6fpcd"
+            },
+            "editorMode": "builder",
+            "exemplar": false,
+            "expr": "sales_table_row_count{keyspace=\"ecommerce\",table=\"sales\"}\n\n",
+            "legendFormat": "",
+            "range": true,
+            "refId": "A"
+          }
+        ],
+        "title": "Row in Sales Table",
+        "type": "timeseries"
+      }
+    ],
+    "preload": false,
+    "refresh": "auto",
+    "schemaVersion": 41,
+    "tags": [],
+    "templating": {
+      "list": []
+    },
+    "time": {
+      "from": "now-30m",
+      "to": "now"
+    },
+    "timepicker": {},
+    "timezone": "browser",
+    "title": "Rows per sale",
+    "uid": "felgxl9pyr9q8f",
+    "version": 2
+  }
+
+##### ./exporter/Dockerfile #####
+
+FROM python:3.11-slim
+WORKDIR /app
+COPY exporter.py .
+RUN pip install cassandra-driver prometheus_client
+EXPOSE 9123
+CMD ["python", "exporter.py"]
+
+##### ./exporter/exporter.py #####
+
+import os, time, collections, logging
+from cassandra.cluster import Cluster
+from prometheus_client import start_http_server, Gauge
+
+
+CASSANDRA_CONTACT_POINTS = os.getenv("CASSANDRA_CONTACT_POINTS", "cassandra").split(",")
+CASSANDRA_PORT           = int(os.getenv("CASSANDRA_PORT", 9042))
+POLL_INTERVAL            = int(os.getenv("POLL_INTERVAL", 30))
+EXPORTER_PORT            = int(os.getenv("EXPORTER_PORT", 9123))
+
+KS                       = os.getenv("KEYSPACE", "ecommerce")
+SALES_TBL                = os.getenv("SALES_TABLE", "sales")
+PRODUCT_TBL              = os.getenv("PRODUCT_TABLE", "products")
+INVENTORY_TBL            = os.getenv("INVENTORY_TABLE", "inventory")
+STORES_TBL               = os.getenv("STORES_TABLE", "stores")
+
+
+row_count_gauge       = Gauge('ecommerce_sales_rows',            'Row count of sales table')
+total_qty_gauge       = Gauge('ecommerce_sales_total_quantity',  'Total quantity sold')
+total_revenue_gauge   = Gauge('ecommerce_revenue_total',         'Total revenue')
+
+revenue_product_gauge = Gauge('ecommerce_revenue_by_product',
+                              'Revenue per product',
+                              ['product_id', 'product_name'])
+
+revenue_store_gauge   = Gauge('ecommerce_revenue_by_store',
+                              'Revenue per store',
+                              ['store_id', 'store_name'])
+
+inventory_gauge       = Gauge('ecommerce_inventory_stock',
+                              'Stock available per product per store',
+                              ['product_id', 'store_id'])
+
+
+session = None
+def get_session():
+    global session
+    if session is None:
+        cluster = Cluster(contact_points=CASSANDRA_CONTACT_POINTS, port=CASSANDRA_PORT)
+        session = cluster.connect(KS)
+    return session
+
+def dict_from_rows(rows, key_col, *val_cols):
+    """Utility to explode a result set into a dict keyed by key_col."""
+    return {getattr(r, key_col): (r if len(val_cols)==0 else
+            getattr(r, val_cols[0]) if len(val_cols)==1 else
+            tuple(getattr(r, c) for c in val_cols))
+            for r in rows}
+
+
+def collect_metrics():
+    s = get_session()
+
+    products = dict_from_rows(
+        s.execute(f"SELECT product_id, product_name, product_price FROM {PRODUCT_TBL}"),
+        "product_id", "product_name", "product_price")
+    
+    print(products)
+
+    stores = dict_from_rows(
+        s.execute(f"SELECT store_id, store_name FROM {STORES_TBL}"),
+        "store_id", "store_name")
+    
+
+    for row in s.execute(f"SELECT product_id, store_id_quantity FROM {INVENTORY_TBL}"):
+        for store_id, qty in row.store_id_quantity.items():
+            inventory_gauge.labels(str(row.product_id), str(store_id)).set(qty)
+
+    total_rows = 0
+    total_qty  = 0
+    revenue_by_product = collections.defaultdict(float)
+    revenue_by_store   = collections.defaultdict(float)
+
+    for row in s.execute(f"SELECT product_id, quantity, store_id FROM {SALES_TBL}"):
+        print(row)
+        total_rows += 1
+        total_qty  += row.quantity
+
+        price = products.get(row.product_id, ("UNKNOWN", 0.0))[1]  
+        revenue = row.quantity * price
+        revenue_by_product[row.product_id] += revenue
+        revenue_by_store[row.store_id]     += revenue
+
+    row_count_gauge.set(total_rows)
+    total_qty_gauge.set(total_qty)
+    total_revenue = sum(revenue_by_product.values())
+    total_revenue_gauge.set(total_revenue)
+
+    revenue_product_gauge.clear()
+    for pid, rev in revenue_by_product.items():
+        pname = products[pid][0] if pid in products else "UNKNOWN"
+        revenue_product_gauge.labels(str(pid), pname).set(rev)
+
+    revenue_store_gauge.clear()
+    for sid, rev in revenue_by_store.items():
+        sname = stores.get(sid, "UNKNOWN")
+        revenue_store_gauge.labels(str(sid), sname).set(rev)
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+    start_http_server(EXPORTER_PORT)
+    logging.info("Exporter up on :%s (poll every %ss)", EXPORTER_PORT, POLL_INTERVAL)
+
+    while True:
+        try:
+            collect_metrics()
+        except Exception as ex:
+            logging.exception("Failed to collect metrics: %s", ex)
+        time.sleep(POLL_INTERVAL)

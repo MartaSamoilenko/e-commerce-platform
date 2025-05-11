@@ -31,7 +31,6 @@ for msg in consumer:
     item = msg.value
     item_ts = datetime.fromisoformat(item['ts'])
 
-    # convert store_id_quantity from string to UUID
     item['store_id_quantity'] = {uuid.UUID(k): v for k, v in item['store_id_quantity'].items()}
     
     batch.add(

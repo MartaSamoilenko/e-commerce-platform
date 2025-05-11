@@ -72,7 +72,7 @@ def collect_metrics():
     revenue_by_store   = collections.defaultdict(float)
 
     for row in s.execute(f"SELECT product_id, quantity, store_id FROM {SALES_TBL}"):
-        print(row)
+        # print(row)
         total_rows += 1
         total_qty  += row.quantity
 

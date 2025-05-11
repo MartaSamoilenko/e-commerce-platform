@@ -1,4 +1,0 @@
-kafka-python
-cassandra-driver
-pandas
-fastapi[standard]
