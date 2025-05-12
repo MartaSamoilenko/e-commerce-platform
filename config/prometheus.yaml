@@ -36,5 +36,11 @@ scrape_configs:
       - targets: ['cassandra-exporter:9123']
         labels:
           cluster: test_cluster
+  
+  - job_name: 'pushgateway'
+    honor_labels: true     # keep labels set by Pushgateway
+    static_configs:
+      - targets: ['pushgateway:9091']
+
 
 

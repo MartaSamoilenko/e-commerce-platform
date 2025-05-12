@@ -8,7 +8,7 @@ services:
       - "2181:2181"
 
   kafka:
-    image: confluentinc/cp-kafka:7.4.0
+    image: confluentinc/cp-kafka:latest
     depends_on:
       - zookeeper
     ports:
@@ -26,6 +26,8 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    extra_hosts:                                                                
+      - "host.docker.internal:host-gateway" 
 
   cassandra:
     image: cassandra:latest
@@ -73,7 +75,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: docker.io/grafana/grafana-oss:11.6.0
+    image: docker.io/grafana/grafana-oss:latest
     container_name: grafana
     ports:
       - "3000:3000"
@@ -84,11 +86,8 @@ services:
         condition: service_healthy
     volumes:
       - grafana-data:/var/lib/grafana
-      # 1) auto-provision data sources
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-      # 2) auto-provision dashboards
       - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
-      # 3) the actual dashboard JSON files
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     restart: unless-stopped
   
@@ -119,7 +118,6 @@ services:
         condition: service_healthy
       cassandra:
         condition: service_healthy
-
     restart: 'always'
     environment:
       - ROLE=sales_producer
@@ -137,6 +135,12 @@ services:
     restart: 'always'
     environment:
       - ROLE=sales_consumer
+    healthcheck:
+      test: ["CMD", "python", "health_check.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s 
 
   inventory_producer:
     build: ./inventory
@@ -164,24 +168,50 @@ services:
     restart: 'always'
     environment:
       - ROLE=inventory_consumer
-
-  app:
-    build: ./app
+  
+  spark-master:
+    image: bitnami/spark:latest
     environment:
-      - ROLE=app
+      - SPARK_MODE=master
+    ports:            
+      - "8080:8080"   
+      - "7077:7077"  
     depends_on:
-      cassandra-init:
-        condition: service_completed_successfully
-      sales_producer:
-        condition: service_started
+      kafka:
+        condition: service_healthy
       sales_consumer:
-        condition: service_started
-      inventory_producer:
-        condition: service_started
-      inventory_consumer:
-        condition: service_started
+        condition: service_healthy
+
+  spark-worker:
+    image: bitnami/spark:latest
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_WORKER_CORES=2
     ports:
-      - "8000:8000" 
+      - "8081:8081"  
+    extra_hosts:                                                                
+      - "host.docker.internal:host-gateway" 
+
+  pushgateway:
+    image: prom/pushgateway:latest
+    restart: unless-stopped
+    ports:
+      - "9091:9091"
+
+  spark_job:
+    build: ./spark
+    depends_on:
+      - spark-master
+    environment:
+      - BOOTSTRAP_SERVERS=kafka:9092
+      - PUSHGATEWAY=pushgateway:9091
+    extra_hosts:                                                                
+      - "host.docker.internal:host-gateway"
+
 
 volumes:
   prometheus-data:
