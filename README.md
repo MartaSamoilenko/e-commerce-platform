@@ -13,26 +13,32 @@ flowchart TB
         
     end
 
-    subgraph "Stream Processing"
-        KafkaStreams["Kafka Streams"]
-       
-        Kafka --> KafkaStreams
-    end
 
     subgraph "Microservices"
         SalesService["Sales Processing Service"]
         InventoryService["Inventory Management Service"]
+        StreamsService["Realtime Spark Streams Metrics Calculation Service"]
         
         SalesCassandra[(Cassandra DB Sales Data)]
         InventoryCassandra[(Cassandra DB Inventory Data)]
+        UserCassandra[(Cassandra DB User Data)]
         
-        UserService <--> UserCassandra
         SalesService <--> SalesCassandra
+        SalesService <--> UserCassandra
+        SalesService <--> InventoryCassandra
+        
+
         InventoryService <--> InventoryCassandra
         
-        KafkaStreams --> UserService
-        KafkaStreams --> SalesService
-        KafkaStreams --> InventoryService
+        Kafka --> StreamsService
+        Kafka --> SalesService
+        Kafka --> InventoryService
+
+        ExporterService["Metrics Calculation Service"]
+
+        SalesCassandra --> ExporterService
+        InventoryCassandra --> ExporterService
+        UserCassandra --> ExporterService
       
     end
     
@@ -42,8 +48,7 @@ flowchart TB
         
         Kafka -- "Coordination" --> Zookeeper
         
-        SalesCassandra <-- "Metrics" --> Prometheus
-        UserCassandra <-- "Metrics" --> Prometheus
-        InventoryCassandra <-- "Metrics" --> Prometheus
+        ExporterService <-- "Metrics" --> Prometheus
+        StreamsService <-- "Metrics" --> Prometheus
     end
 ```
