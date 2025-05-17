@@ -14,8 +14,8 @@ consumer = KafkaConsumer(
     TOPIC,
     bootstrap_servers='kafka:9092',
     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-    group_id="sales-consumer",        # <-- the magic line
-    enable_auto_commit=False,         # commit only after DB write
+    # group_id="sales-consumer",        # <-- the magic line
+    # enable_auto_commit=False,         # commit only after DB write
     auto_offset_reset='earliest',
     # enable_auto_commit=True
 )

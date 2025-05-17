@@ -11,9 +11,7 @@ TOPIC = 'sales'
 
 producer = KafkaProducer(
     bootstrap_servers='kafka:9092',
-    value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-    enable_idempotence=True,          # no dupes
-    transactional_id="sales-producer" # required when enable_idempotence
+    value_serializer=lambda v: json.dumps(v).encode('utf-8')
 )
 
 products = {uuid.uuid4() : {'product_name': 'product_1', 'product_price': round(random.uniform(5, 100), 2)}, 

@@ -89,11 +89,15 @@ def collect_metrics():
     revenue_product_gauge.clear()
     for pid, rev in revenue_by_product.items():
         pname = products[pid][0] if pid in products else "UNKNOWN"
+        if pname == "UNKNOWN":
+            continue
         revenue_product_gauge.labels(str(pid), pname).set(rev)
 
     revenue_store_gauge.clear()
     for sid, rev in revenue_by_store.items():
         sname = stores.get(sid, "UNKNOWN")
+        if sname == "UNKNOWN":
+            continue
         revenue_store_gauge.labels(str(sid), sname).set(rev)
 
 def clear_all_gauges():
