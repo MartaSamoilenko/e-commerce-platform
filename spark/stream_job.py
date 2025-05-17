@@ -93,7 +93,6 @@ def push_metrics(batch_df, batch_id):
     print(f"Pushed {len(rows)} window rows to Pushgateway")
 
 
-# ------------------------------------------------------------------ stream → foreachBatch
 query = (
     windowed.writeStream
     .outputMode("update")                 #
