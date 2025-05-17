@@ -10,7 +10,9 @@ TOPIC = 'sales'
 
 producer = KafkaProducer(
     bootstrap_servers='kafka:9092',
-    value_serializer=lambda v: json.dumps(v).encode('utf-8')
+    value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+    enable_idempotence=True,          # no dupes
+    transactional_id="sales-producer" # required when enable_idempotence
 )
 
 products = {uuid.uuid4() : {'product_name': 'product_1', 'product_price': round(random.uniform(5, 100), 2)}, 
@@ -24,13 +26,15 @@ users = {uuid.uuid4() : 'user_1',
          uuid.uuid4() : 'user_4'}
 
 
-
-
 def init_users():
     insert_stmt = session.prepare("""
     INSERT INTO users (user_id, user_name)
     VALUES (?, ?)
     """)
+
+    # if something in users table, do not insert
+    if session.execute(f"SELECT user_id FROM users"):
+        return
 
     for user_id, user_name in users.items():
         session.execute(insert_stmt, (user_id, user_name))

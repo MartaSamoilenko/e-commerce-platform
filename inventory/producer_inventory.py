@@ -24,11 +24,16 @@ stores = {uuid.uuid4() : 'store_1',
           uuid.uuid4() : 'store_4'}
 
 def init_products():
+
     insert_stmt = session.prepare("""
     INSERT INTO products (product_id, product_name, product_price)
     VALUES (?, ?, ?)
     """)
 
+    # if something in products table, do not insert
+    if session.execute(f"SELECT product_id FROM products").one():
+        return
+    
     for product_id, product in products.items():
         session.execute(insert_stmt, (product_id, product['product_name'], product['product_price']))
 
@@ -37,6 +42,10 @@ def init_stores():
     INSERT INTO stores (store_id, store_name)
     VALUES (?, ?)
     """)
+
+    # if something in stores table, do not insert
+    if session.execute(f"SELECT store_id FROM stores").one():
+        return
 
     for store_id, store_name in stores.items():
         session.execute(insert_stmt, (store_id, store_name))
@@ -88,6 +97,7 @@ if __name__ == '__main__':
     
     while True:
         item = gen_inventory()
+
         if not item:
             continue
         
