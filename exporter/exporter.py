@@ -96,8 +96,18 @@ def collect_metrics():
         sname = stores.get(sid, "UNKNOWN")
         revenue_store_gauge.labels(str(sid), sname).set(rev)
 
+def clear_all_gauges():
+    revenue_product_gauge.clear()
+    revenue_store_gauge.clear()
+    inventory_gauge.clear()
+
+    row_count_gauge.set(0)
+    total_qty_gauge.set(0)
+    total_revenue_gauge.set(0)
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+    clear_all_gauges()
     start_http_server(EXPORTER_PORT)
     logging.info("Exporter up on :%s (poll every %ss)", EXPORTER_PORT, POLL_INTERVAL)
 
