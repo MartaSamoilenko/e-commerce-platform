@@ -2,6 +2,7 @@ import json, time, uuid, random
 from datetime import datetime
 from kafka import KafkaProducer
 from cassandra.cluster import Cluster
+import random
 
 cluster = Cluster(['cassandra'])
 session = cluster.connect('ecommerce')
@@ -40,13 +41,16 @@ def init_users():
         session.execute(insert_stmt, (user_id, user_name))
 
 def get_random_item_from_inventory():
-    query = session.prepare("""
+    rows = session.execute("""
         SELECT product_id, store_id_quantity, ts
         FROM inventory
-        LIMIT 1
-    """)
-    
-    return session.execute(query).one()
+    """).all()
+
+    if not rows:
+        return None
+
+    return random.choice(rows)
+
 
 
 def gen_sale():

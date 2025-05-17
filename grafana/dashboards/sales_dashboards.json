@@ -24,53 +24,155 @@
       {
         "datasource": {
           "type": "prometheus",
-          "uid": "aelgvy6uj6fpcd"
+          "uid": "PBFA97CFB590B2093"
         },
-        "description": "here is a row for sales table",
+        "description": "\tAll units sold",
         "fieldConfig": {
           "defaults": {
             "color": {
-              "mode": "palette-classic"
+              "mode": "thresholds"
             },
-            "custom": {
-              "axisBorderShow": false,
-              "axisCenteredZero": false,
-              "axisColorMode": "text",
-              "axisLabel": "Sales Count",
-              "axisPlacement": "auto",
-              "barAlignment": 0,
-              "barWidthFactor": 0.6,
-              "drawStyle": "line",
-              "fillOpacity": 0,
-              "gradientMode": "none",
-              "hideFrom": {
-                "legend": false,
-                "tooltip": false,
-                "viz": false
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "red"
+                },
+                {
+                  "color": "green",
+                  "value": 100000
+                }
+              ]
+            },
+            "unit": "Items"
+          },
+          "overrides": []
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 0
+        },
+        "id": 3,
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto",
+          "orientation": "auto",
+          "percentChangeColorMode": "standard",
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "showPercentChange": false,
+          "textMode": "auto",
+          "wideLayout": true
+        },
+        "pluginVersion": "12.0.0",
+        "targets": [
+          {
+            "editorMode": "code",
+            "expr": "ecommerce_sales_total_quantity",
+            "legendFormat": "__auto",
+            "range": true,
+            "refId": "A"
+          }
+        ],
+        "title": "Total Quantity Sold",
+        "type": "stat"
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "PBFA97CFB590B2093"
+        },
+        "description": "Number of sales rows",
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "red"
+                },
+                {
+                  "color": "green",
+                  "value": 1000
+                }
+              ]
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "ecommerce_revenue_by_product"
               },
-              "insertNulls": false,
-              "lineInterpolation": "linear",
-              "lineStyle": {
-                "dash": [
-                  10,
-                  10
-                ],
-                "fill": "dash"
-              },
-              "lineWidth": 3,
-              "pointSize": 5,
-              "scaleDistribution": {
-                "type": "linear"
-              },
-              "showPoints": "auto",
-              "spanNulls": false,
-              "stacking": {
-                "group": "A",
-                "mode": "none"
-              },
-              "thresholdsStyle": {
-                "mode": "off"
-              }
+              "properties": [
+                {
+                  "id": "displayName",
+                  "value": "FE"
+                }
+              ]
+            }
+          ]
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 8
+        },
+        "id": 2,
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto",
+          "orientation": "auto",
+          "percentChangeColorMode": "standard",
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "showPercentChange": false,
+          "textMode": "auto",
+          "wideLayout": true
+        },
+        "pluginVersion": "12.0.0",
+        "targets": [
+          {
+            "editorMode": "code",
+            "expr": "ecommerce_sales_rows\n",
+            "legendFormat": "__auto",
+            "range": true,
+            "refId": "A"
+          }
+        ],
+        "title": "Total Sales Records",
+        "type": "stat"
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "aelgvy6uj6fpcd"
+        },
+        "description": "",
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
             },
             "mappings": [
               {
@@ -88,14 +190,19 @@
               "mode": "absolute",
               "steps": [
                 {
-                  "color": "green"
+                  "color": "red"
                 },
                 {
-                  "color": "red",
-                  "value": 80
+                  "color": "yellow",
+                  "value": 1000000
+                },
+                {
+                  "color": "green",
+                  "value": 5000000
                 }
               ]
-            }
+            },
+            "unit": "currencyUSD"
           },
           "overrides": []
         },
@@ -103,39 +210,43 @@
           "h": 8,
           "w": 12,
           "x": 0,
-          "y": 0
+          "y": 16
         },
         "id": 1,
         "options": {
-          "legend": {
-            "calcs": [],
-            "displayMode": "list",
-            "placement": "bottom",
-            "showLegend": true
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto",
+          "orientation": "auto",
+          "percentChangeColorMode": "standard",
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "",
+            "values": false
           },
-          "tooltip": {
-            "hideZeros": false,
-            "mode": "single",
-            "sort": "none"
-          }
+          "showPercentChange": false,
+          "textMode": "auto",
+          "wideLayout": true
         },
-        "pluginVersion": "11.6.0",
+        "pluginVersion": "12.0.0",
         "targets": [
           {
             "datasource": {
               "type": "prometheus",
               "uid": "aelgvy6uj6fpcd"
             },
-            "editorMode": "builder",
+            "editorMode": "code",
             "exemplar": false,
-            "expr": "sales_table_row_count{keyspace=\"ecommerce\",table=\"sales\"}\n\n",
+            "expr": "ecommerce_revenue_total",
             "legendFormat": "",
             "range": true,
             "refId": "A"
           }
         ],
-        "title": "Row in Sales Table",
-        "type": "timeseries"
+        "title": "Total Revenue",
+        "type": "stat"
       }
     ],
     "preload": false,
@@ -151,7 +262,7 @@
     },
     "timepicker": {},
     "timezone": "browser",
-    "title": "Rows per sale",
+    "title": "Eccomerce overview",
     "uid": "felgxl9pyr9q8f",
-    "version": 2
+    "version": 5
   }
